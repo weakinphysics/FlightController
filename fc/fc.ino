@@ -29,25 +29,39 @@ const double g = 9.81;
 double prev_time = 0;
 double curr_time = 0;
 double degreeToRadian = 3.1415926/180.0;
-
+double radianToDegree = 180.0/3.1415926;
 // rate gyros work in rad/s. must keep this in mind
-
 double rotMat[9];         // rotation matrix from local to global, the inverse is the transpose
 double rotMatInverse[9];  // calculating these numbers is tricky, because intensive calculations might mean a varying time step
 double hMatrix[9];        // the disgusting piece of filth we use to calculate the expected euler angle change from the rate gyros
 
-
 double omega[3];        // from rate_gyros, the real angular velocity, as measured in the body frame
-double deltaAngles[3];
-double eulerAngles[3];  // the thing we use to calculate the rotation matrix
+double accelAngles[3];  // angles fetched from the accelerometer, we use to estimate the approx position of the UAV
+double deltaAngles[3];  // calculate the change in angles for the euler matrix, calculated purely from the gyros
+double eulerAngles[3];  // the thing we use to calculate the rotation matrix, i.e. final angles
 double a[3];            // accelaration vector
-
 double omega_bias[3] = { 0.0, 0.0, 0.0 };
 double accel_bias[3] = { 0.0, 0.0, 0.0 };
-
 const int MPU = 0x68;
 
-double calibRoll, calibPitch, calibYaw;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+///////////////////////////  LINEAR ALGEBRA OPERATIONS on VECTORS AND ROTATION MATRICEs /////////////////
+
 
 void transpose(double* trans, double* mat, size_t nr, size_t nc) {
   // useful for inverting rotation matrices
@@ -58,6 +72,7 @@ void transpose(double* trans, double* mat, size_t nr, size_t nc) {
   }
   return;
 }
+
 
 void rotateVector(double* rotationMatrix, double* vector, size_t r, size_t c) {
   // the code assumes the range of the transformation is the entire input space, or, nullspace = 0
@@ -126,13 +141,35 @@ void initializeAllMatrices() {
   // the above values make the matrix identity
 }
 
+//////////////////////////////////////////////////////////////// LINEAR ALGEBRA OPERATIONS END //////////////////////////////////////////////////////////////////
+
+
+
+
+
+
+
+
+
+//////////////////////////////////////////////////////////////// SENSOR DATA PROCESSING /////////////////////////////////////////////////////////////////////////
+
+
+
 
 void performEulerKinematics() {
   // code to adjust IMU logic
   // for now, we use the H_MATRIX
   // WARNING: THIS CODE ONLY WORKS WHEN THE ROTATION SEQUENCE PSI->THETA->PHI is used!!!
-
   // let us just use our values from the gyro for now 
+
+  // first we acquire the angles from the accelerometer. This is under the strict assumption the vehicle is not accelarating in any direction other than straight down 
+
+  accelAngles[2] = accelAngles[2]; // this is the yaw rate, the accelerometer cannot measure this
+  accelAngles[1] = -atan(a[0]/(sqrt(a[1]*a[1] + a[2]*a[2]))); // this is the pitch, the returned value is in the range of pi to pi radians
+  accelAngles[0] = atan(a[1]/(sqrt(a[0]*a[0] + a[2]*a[2]))); // this is the roll
+
+  // the order of rotations in yaw pitch roll for global to body frame
+  
   transformVector(hMatrix, omega, deltaAngles, 3, 3);
   curr_time = millis();
   double delta_time = (curr_time - prev_time)/(1000.0);
@@ -141,8 +178,17 @@ void performEulerKinematics() {
   adjustHMatrix();
 }
 
+void kalmannFilter(){
+  // write the code for a 1D Kalmann filter
+  // delta theta is obtained in all frames. and is corrected for. I think. 
+  
+}
 
-void getIMUAccelData() {
+
+
+
+
+void getIMUData() {
   Wire.beginTransmission(MPU);
   Wire.write(ACCEL_XH);
   uint8_t err = Wire.endTransmission(false);
@@ -169,33 +215,12 @@ void getIMUAccelData() {
 }
 
 
-void getIMUGyroData() {
-
-  // Wire.beginTransmission(MPU);
-  // Wire.write(GYRO_XH);  // gyro data starts here
-  // Wire.endTransmission(false);
-  // uint8_t err = Wire.endTransmission(false);
-  // if (err != 0) {
-  //   Serial.println(" AN ERROR OCCURED ");
-  //   delay(5000);
-  // }
-  // if (Wire.available() == 6) {
-  //   Wire.requestFrom(MPU, 6, true);
-    
-  // }
-  return;
-}
-
-
-
 void calibrateIMU() {
   for (int i = 0; i < 1000; i++) {
-    getIMUGyroData();
+    getIMUData();
     omega_bias[0] += omega[0];
     omega_bias[1] += omega[1];
     omega_bias[2] += omega[2];
-
-    getIMUAccelData();
     accel_bias[0] += a[0];
     accel_bias[1] += a[1];
     accel_bias[2] += a[2];
@@ -260,9 +285,7 @@ void initializeIMU() {
 
 void acquireIMUData() {
   // write IMU fetch logic
-  getIMUGyroData();
-  getIMUAccelData();
-
+  getIMUData();
   for (int i = 0; i < 3; i++) {
     omega[i] -= omega_bias[i];
     a[i] -= accel_bias[i];
@@ -297,17 +320,15 @@ void scanAvailableI2CDev() {
 }
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(57600);
   Wire.begin();
   scanAvailableI2CDev();
-  eulerAngles[0] = 0;
-  eulerAngles[1] = 0;
-  eulerAngles[2] = 0;
+  for(int i = 0; i < 3; i++) accelAngles[i] = 0;
+  for(int i = 0; i < 3; i++) eulerAngles[i] = 0;
   // initially the orientation of the UAV is locked at level
   initializeAllMatrices();
   initializeIMU();
   delay(5000);
-
   prev_time = millis();  
   // put your setup code here, to run once:
 }
@@ -329,22 +350,24 @@ void loop() {
   // adjustRotationMatrix();
   acquireIMUData();
   performEulerKinematics();
+
   // Serial.println("Accel Values: ");
   // Serial.print(a[0]);
   // Serial.print(' ');
   // Serial.print(a[1]);
   // Serial.print(' ');
   // Serial.println(a[2]);
-  Serial.println("Omega Values");
-  Serial.print(omega[0]);
+  Serial.println("Euler Values");
+  Serial.print(accelAngles[0]*radianToDegree);
   Serial.print(' ');
-  Serial.print(omega[1]);
+  Serial.print(accelAngles[1]*radianToDegree);
   Serial.print(' ');
-  Serial.println(omega[2]);
-  Serial.println("Eulerian Values");
-  Serial.print(eulerAngles[0]);
-  Serial.print(' ');
-  Serial.print(eulerAngles[1]);
-  Serial.print(' ');
-  Serial.println(eulerAngles[2]);
+  Serial.println(accelAngles[2]*radianToDegree);
+  delay(1000);
+  // Serial.println("Eulerian Values");
+  // Serial.print(eulerAngles[0]);
+  // Serial.print(' ');
+  // Serial.print(eulerAngles[1]);
+  // Serial.print(' ');
+  // Serial.println(eulerAngles[2]);
 }
