@@ -1,5 +1,5 @@
 #include <Wire.h>
-
+#include <PPMReader.h>
 #define GLOBAL_CONFIG 0x1A
 
 #define ACCEL_CONFIG 0x1C
@@ -42,16 +42,89 @@ double eulerAngles[3];  // the thing we use to calculate the rotation matrix, i.
 double a[3];            // accelaration vector
 double omega_bias[3] = { 0.0, 0.0, 0.0 };
 double accel_bias[3] = { 0.0, 0.0, 0.0 };
+
 const int MPU = 0x68;
 
 
+byte interruptPin = 3;
+byte channelCount = 6;
+PPMReader ppm(interruptPin, channelCount);
+
+unsigned channels[6] = {0, 0, 0, 0, 0, 0};
+
+// THRUST : CHANNEL 3
+// PITCH: CHANNEL 2 -> Inverted in the received controller, which is correct, since forward corresponds to a clockwise rotation
+// ROLL: CHANNEL 1
+// YAW: CHANNEL 4
 
 
 
 
+/////////////////////////////////////////////////////////// COMMUNICATION AND INTERFACING /////////////////////////////////////////////////////////////////////
+
+void scanAvailableI2CDev() {
+  Serial.println();
+  Serial.println("I2C scanner. Scanning ...");
+  byte count = 0;
+
+  Wire.begin();
+  for (byte i = 1; i < 120; i++) {
+    Wire.beginTransmission(i);
+    if (Wire.endTransmission() == 0) {
+      Serial.print("Found address: ");
+      Serial.print(i, DEC);
+      Serial.print(" (0x");
+      Serial.print(i, HEX);
+      Serial.println(")");
+      count++;
+      delay(1);  // maybe unneeded?
+    }            // end of good response
+  }              // end of for loop
+  Serial.println("Done.");
+  Serial.print("Found ");
+  Serial.print(count, DEC);
+  Serial.println(" device(s).");
+  delay(5000);
+}
 
 
+void getIMUData() {
+  Wire.beginTransmission(MPU);
+  Wire.write(ACCEL_XH);
+  uint8_t err = Wire.endTransmission(false);
+  if (err != 0) {
+    Serial.println(" AN ERROR OCCURED ");
+    delay(5000);
+  }
+  Wire.requestFrom(MPU, 14, true);
+  if (Wire.available()) {
+    int16_t a_x = (Wire.read() << 8) | Wire.read();
+    int16_t a_y = (Wire.read() << 8) | Wire.read();
+    int16_t a_z = (Wire.read() << 8) | Wire.read();
+    a[1] = (a_x / 4096.0) * g;
+    a[0] = (a_y / 4096.0) * g;
+    a[2] = (a_z / 4096.0) * g;
+    int16_t temp = Wire.read()<<8|Wire.read();
+    int16_t g_x = (Wire.read() << 8) | Wire.read();  // read the next 6 regs
+    int16_t g_y = (Wire.read() << 8) | Wire.read();
+    int16_t g_z = (Wire.read() << 8) | Wire.read();
+    omega[0] = (g_x / 65.5)*degreeToRadian;  // roll
+    omega[1] = (g_y / 65.5)*degreeToRadian;  // pitch
+    omega[2] = (g_z / 65.5)*degreeToRadian;  // yaw
+  } else Serial.println("HMMMMM");
+}
 
+void processRCInput(){
+  for (byte channel = 1; channel <= channelAmount; ++channel) {
+      unsigned value = ppm.latestValidChannelValue(channel, 0);
+      channels[channel] = value;
+      // Serial.print(String(value) + "\t");
+  }
+  // Serial.println();
+  // delay(2000);
+}
+
+///////////////////////////////////////////////////////////////// END COMMS AND INTERFACING //////////////////////////////////////////////////////////////////////
 
 
 
@@ -162,11 +235,11 @@ void performEulerKinematics() {
   // WARNING: THIS CODE ONLY WORKS WHEN THE ROTATION SEQUENCE PSI->THETA->PHI is used!!!
   // let us just use our values from the gyro for now 
 
-  // first we acquire the angles from the accelerometer. This is under the strict assumption the vehicle is not accelarating in any direction other than straight down 
+  // first we acquire the angles from the accelerometer. This is under the strict assumption the vehicle is not accelerating in any direction other than straight down 
 
   accelAngles[2] = accelAngles[2]; // this is the yaw rate, the accelerometer cannot measure this
-  accelAngles[1] = -atan(a[0]/(sqrt(a[1]*a[1] + a[2]*a[2]))); // this is the pitch, the returned value is in the range of pi to pi radians
-  accelAngles[0] = atan(a[1]/(sqrt(a[0]*a[0] + a[2]*a[2]))); // this is the roll
+  accelAngles[1] = atan(a[0]/(sqrt(a[1]*a[1] + a[2]*a[2]))); // this is the pitch, the returned value is in the range of pi to pi radians
+  accelAngles[0] = atan(a[1]/a[2]); // this is the roll
 
   // the order of rotations in yaw pitch roll for global to body frame
   
@@ -178,41 +251,13 @@ void performEulerKinematics() {
   adjustHMatrix();
 }
 
-void kalmannFilter(){
+void kalmannFilter1d(){
   // write the code for a 1D Kalmann filter
   // delta theta is obtained in all frames. and is corrected for. I think. 
   
+  
 }
 
-
-
-
-
-void getIMUData() {
-  Wire.beginTransmission(MPU);
-  Wire.write(ACCEL_XH);
-  uint8_t err = Wire.endTransmission(false);
-  if (err != 0) {
-    Serial.println(" AN ERROR OCCURED ");
-    delay(5000);
-  }
-  Wire.requestFrom(MPU, 14, true);
-  if (Wire.available()) {
-    int16_t a_x = (Wire.read() << 8) | Wire.read();
-    int16_t a_y = (Wire.read() << 8) | Wire.read();
-    int16_t a_z = (Wire.read() << 8) | Wire.read();
-    a[1] = (a_x / 4096.0) * g;
-    a[0] = (a_y / 4096.0) * g;
-    a[2] = (a_z / 4096.0) * g;
-    int16_t temp = Wire.read()<<8|Wire.read();
-    int16_t g_x = (Wire.read() << 8) | Wire.read();  // read the next 6 regs
-    int16_t g_y = (Wire.read() << 8) | Wire.read();
-    int16_t g_z = (Wire.read() << 8) | Wire.read();
-    omega[0] = (g_x / 65.5)*degreeToRadian;  // roll
-    omega[1] = (g_y / 65.5)*degreeToRadian;  // pitch
-    omega[2] = (g_z / 65.5)*degreeToRadian;  // yaw
-  } else Serial.println("HMMMMM");
-}
 
 
 void calibrateIMU() {
@@ -294,30 +339,21 @@ void acquireIMUData() {
 }
 
 
-void scanAvailableI2CDev() {
-  Serial.println();
-  Serial.println("I2C scanner. Scanning ...");
-  byte count = 0;
 
-  Wire.begin();
-  for (byte i = 1; i < 120; i++) {
-    Wire.beginTransmission(i);
-    if (Wire.endTransmission() == 0) {
-      Serial.print("Found address: ");
-      Serial.print(i, DEC);
-      Serial.print(" (0x");
-      Serial.print(i, HEX);
-      Serial.println(")");
-      count++;
-      delay(1);  // maybe unneeded?
-    }            // end of good response
-  }              // end of for loop
-  Serial.println("Done.");
-  Serial.print("Found ");
-  Serial.print(count, DEC);
-  Serial.println(" device(s).");
-  delay(5000);
-}
+
+
+
+
+
+
+
+//////////////////////////////////////////////////////////// END SENSOR FUSION /////////////////////////////////////////////////////////////////////////////////
+
+
+
+
+
+
 
 void setup() {
   Serial.begin(57600);
@@ -348,8 +384,8 @@ void loop() {
   // rotateVector(rotMat, omega);
   // rotateVector(rotMat, a);
   // adjustRotationMatrix();
-  acquireIMUData();
-  performEulerKinematics();
+  // acquireIMUData();
+  // performEulerKinematics();
 
   // Serial.println("Accel Values: ");
   // Serial.print(a[0]);
@@ -357,13 +393,14 @@ void loop() {
   // Serial.print(a[1]);
   // Serial.print(' ');
   // Serial.println(a[2]);
-  Serial.println("Euler Values");
-  Serial.print(accelAngles[0]*radianToDegree);
-  Serial.print(' ');
-  Serial.print(accelAngles[1]*radianToDegree);
-  Serial.print(' ');
-  Serial.println(accelAngles[2]*radianToDegree);
-  delay(1000);
+  // Serial.println("Euler Values");
+  // Serial.print(accelAngles[0]*radianToDegree);
+  // Serial.print(' ');
+  // Serial.print(accelAngles[1]*radianToDegree);
+  // Serial.print(' ');
+  // Serial.println(accelAngles[2]*radianToDegree);
+  // delay(1000);
+  
   // Serial.println("Eulerian Values");
   // Serial.print(eulerAngles[0]);
   // Serial.print(' ');
